@@ -3,13 +3,28 @@ import { useParams, Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import type { Note } from "../types";
 import { MDXProvider } from "@mdx-js/react";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faSpinner } from "@fortawesome/free-solid-svg-icons";
 import * as runtime from "react/jsx-runtime";
 import { evaluate } from "@mdx-js/mdx";
+import { toast } from "react-toastify";
 
 interface AnchorProps {
   href?: string;
   children: React.ReactNode;
   [key: string]: unknown;
+}
+
+function ErrorPage({ message }: { message: string }) {
+  return (
+    <div className="p-6 text-center">
+      <h2 className="text-2xl font-bold text-red-500">Error</h2>
+      <p className="text-gray-500 mt-2">{message}</p>
+      <Link to="/" className="btn btn-primary mt-4 inline-block">
+        Go to Dashboard
+      </Link>
+    </div>
+  );
 }
 
 function Garden() {
@@ -20,10 +35,11 @@ function Garden() {
   );
   const [error, setError] = useState<string | null>(null);
   const [backlinks, setBacklinks] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function fetchNote() {
-      // Fetch user by username
+      setIsLoading(true);
       const { data: user, error: userError } = await supabase
         .from("users")
         .select("id")
@@ -32,10 +48,10 @@ function Garden() {
 
       if (userError || !user) {
         setError("User not found");
+        setIsLoading(false);
         return;
       }
 
-      // Fetch public note by slug and user_id
       const { data: noteData, error: noteError } = await supabase
         .from("notes")
         .select(
@@ -48,19 +64,18 @@ function Garden() {
 
       if (noteError || !noteData) {
         setError("Note not found or not public");
+        setIsLoading(false);
         return;
       }
 
       setNote(noteData as Note);
 
-      // Parse backlinks for clickable links
       const backlinkRegex = /\[\[([^\]]+)\]\]/g;
       const foundBacklinks = [...noteData.content.matchAll(backlinkRegex)].map(
         (match) => match[1],
       );
       setBacklinks(foundBacklinks);
 
-      // Evaluate MDX content
       try {
         const { default: EvaluatedComponent } = await evaluate(
           noteData.content,
@@ -68,9 +83,11 @@ function Garden() {
         );
         setMDXContent(() => EvaluatedComponent);
       } catch (err) {
-        console.error("MDX evaluation failed:", err);
+        console.error("Export failed:", err);
+        toast.error("Failed to render note content.");
         setError("Failed to render note content");
       }
+      setIsLoading(false);
     }
 
     fetchNote();
@@ -84,14 +101,18 @@ function Garden() {
           <Link
             to={`/garden/${username}/${linkedSlug}`}
             {...props}
-            className="text-blue-500 hover:underline"
+            className="text-[var(--text)] hover:bg-gray-100 dark:hover:bg-gray-700 px-1 py-0.5 rounded"
           >
             {children}
           </Link>
         );
       }
       return (
-        <a href={href} {...props} className="text-blue-500 hover:underline">
+        <a
+          href={href}
+          {...props}
+          className="text-[var(--text)] hover:bg-gray-100 dark:hover:bg-gray-700 px-1 py-0.5 rounded"
+        >
           {children}
         </a>
       );
@@ -99,30 +120,37 @@ function Garden() {
   };
 
   if (error) {
-    return <div className="p-4 text-red-500 text-center">{error}</div>;
+    return <ErrorPage message={error} />;
   }
 
-  if (!note || !MDXContent) {
-    return <div className="p-4 text-gray-500 text-center">Loading...</div>;
+  if (isLoading || !note || !MDXContent) {
+    return (
+      <div className="flex justify-center p-6 text-[var(--text)]">
+        <FontAwesomeIcon icon={faSpinner} spin />
+      </div>
+    );
   }
 
   return (
-    <div className="max-w-3xl mx-auto p-4">
-      <h1 className="text-3xl font-bold mb-4">{note.title}</h1>
-      <div className="prose prose-lg">
+    <div className="space-y-6">
+      <h1 className="text-3xl font-bold text-[var(--text)]">{note.title}</h1>
+      <div className="prose prose-lg max-w-none dark:prose-invert text-[var(--text)]">
         <MDXProvider components={components}>
           <MDXContent />
         </MDXProvider>
       </div>
+
       {backlinks.length > 0 && (
-        <div className="mt-6">
-          <h3 className="text-xl font-semibold mb-2">Linked Notes</h3>
-          <ul className="list-disc pl-5">
+        <div className="bg-[var(--background)] border border-[var(--border)] p-6 rounded-lg shadow-md">
+          <h3 className="text-xl font-semibold mb-4 text-[var(--text)]">
+            Linked Notes
+          </h3>
+          <ul className="space-y-2">
             {backlinks.map((linkedSlug) => (
               <li key={linkedSlug}>
                 <Link
                   to={`/garden/${username}/${linkedSlug}`}
-                  className="text-blue-500 hover:underline"
+                  className="block hover:bg-[var(--hover-bg)] text-[var(--text)] px-3 py-1 rounded"
                 >
                   {linkedSlug}
                 </Link>

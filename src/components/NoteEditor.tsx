@@ -3,7 +3,9 @@ import { useParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import type { Note } from "../types";
 import { MentionsInput, Mention } from "react-mentions";
-// import { marked } from "marked";
+import { toast } from "react-toastify";
+import DOMPurify from "dompurify";
+import { marked } from "marked";
 
 function NoteEditor() {
   const { noteId } = useParams<{ noteId?: string }>();
@@ -14,6 +16,7 @@ function NoteEditor() {
   const [mentionData, setMentionData] = useState<
     { id: string; display: string }[]
   >([]);
+  const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     async function fetchNoteAndSlugs() {
@@ -24,7 +27,7 @@ function NoteEditor() {
           .eq("id", noteId)
           .single();
         if (error) {
-          console.error("Error fetching note:", error);
+          toast.error("Error fetching note.");
           return;
         }
         if (data) {
@@ -40,7 +43,7 @@ function NoteEditor() {
         .select("id, slug")
         .eq("user_id", (await supabase.auth.getUser()).data.user?.id);
       if (notesError) {
-        console.error("Error fetching slugs:", notesError);
+        toast.error("Error fetching slugs.");
         return;
       }
       setMentionData(
@@ -51,11 +54,25 @@ function NoteEditor() {
   }, [noteId]);
 
   const handleSave = async () => {
+    setIsLoading(true);
     const slug = title.toLowerCase().replace(/\s+/g, "-");
     const user = (await supabase.auth.getUser()).data.user;
 
     if (!user) {
-      alert("You must be logged in to save notes.");
+      toast.error("You must be logged in to save notes.");
+      setIsLoading(false);
+      return;
+    }
+
+    const { data: existingNote } = await supabase
+      .from("notes")
+      .select("id")
+      .eq("slug", slug)
+      .neq("id", noteId || "")
+      .single();
+    if (existingNote) {
+      toast.error("A note with this title already exists.");
+      setIsLoading(false);
       return;
     }
 
@@ -68,7 +85,7 @@ function NoteEditor() {
       content,
       tags: tags.split(",").map((tag) => tag.trim()),
       is_public: isPublic,
-      user_id: user.id, // ✅ Explicitly set user_id for RLS compliance
+      user_id: user.id,
     };
 
     if (noteId) {
@@ -76,7 +93,7 @@ function NoteEditor() {
         .from("notes")
         .update(payload)
         .eq("id", noteId)
-        .eq("user_id", user.id) // ✅ Ensure the user owns the note
+        .eq("user_id", user.id)
         .select()
         .single());
     } else {
@@ -88,13 +105,13 @@ function NoteEditor() {
     }
 
     if (error) {
-      alert(error.message);
+      toast.error(error.message);
+      setIsLoading(false);
       return;
     }
 
-    alert(noteId ? "Note updated!" : "Note saved!");
+    toast.success(noteId ? "Note updated!" : "Note saved!");
 
-    // 🧠 Trigger backlink parser
     if (user && data) {
       try {
         const response = await fetch(import.meta.env.VITE_EDGE_FUNCTION_URL, {
@@ -107,12 +124,14 @@ function NoteEditor() {
           }),
         });
         if (!response.ok) {
-          console.error("Backlink parsing failed:", await response.json());
+          toast.error("Backlink parsing failed.");
         }
       } catch (err) {
-        console.error("Error calling backlink parser:", err);
+        console.error("Export failed:", err);
+        toast.error("Error calling backlink parser.");
       }
     }
+    setIsLoading(false);
   };
 
   const handleExportMarkdown = () => {
@@ -125,10 +144,23 @@ function NoteEditor() {
     URL.revokeObjectURL(url);
   };
 
-  const handleDelete = async () => {
-    const confirmDelete = confirm("Are you sure you want to delete this note?");
-    if (!confirmDelete || !noteId) return;
+  const handleExportHTML = async () => {
+    const html = await marked(content);
+    const sanitizedHTML = DOMPurify.sanitize(html);
+    const blob = new Blob([sanitizedHTML], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
+  const handleDelete = async () => {
+    if (!confirm("Are you sure you want to delete this note?") || !noteId)
+      return;
+
+    setIsLoading(true);
     const userId = (await supabase.auth.getUser()).data.user?.id;
 
     const { data: note, error: fetchError } = await supabase
@@ -138,118 +170,147 @@ function NoteEditor() {
       .single();
 
     if (fetchError || !note) {
-      alert("Failed to fetch note. Cannot delete.");
+      toast.error("Failed to fetch note.");
+      setIsLoading(false);
       return;
     }
 
     if (note.user_id !== userId) {
-      alert("You are not authorized to delete this note.");
+      toast.error("You are not authorized to delete this note.");
+      setIsLoading(false);
       return;
     }
 
-    // First delete links where this note is the source or target
     const { error: linkDeleteError } = await supabase
       .from("links")
       .delete()
       .or(`source_note_id.eq.${noteId},target_note_id.eq.${noteId}`);
 
     if (linkDeleteError) {
-      alert("Failed to delete links: " + linkDeleteError.message);
+      toast.error("Failed to delete links.");
+      setIsLoading(false);
       return;
     }
 
-    // Now delete the note itself
     const { error: noteDeleteError } = await supabase
       .from("notes")
       .delete()
       .eq("id", noteId);
 
     if (noteDeleteError) {
-      alert("Delete failed: " + noteDeleteError.message);
+      toast.error("Delete failed.");
+      setIsLoading(false);
       return;
     }
 
-    alert("Note deleted.");
-    window.location.href = "/"; // or use `navigate("/dashboard")` if using `useNavigate`
+    toast.success("Note deleted.");
+    window.location.href = "/";
   };
 
-  // const handleExportHTML = async () => {
-  //   const html = await marked(content);
-  //   const blob = new Blob([html], { type: "text/html" });
-  //   const url = URL.createObjectURL(blob);
-  //   const a = document.createElement("a");
-  //   a.href = url;
-  //   a.download = `${title}.html`;
-  //   a.click();
-  //   URL.revokeObjectURL(url);
-  // };
-
   return (
-    <div className="flex flex-col gap-2">
-      <h1 className="text-2xl font-bold mb-4">Second Brain</h1>
-      <input
-        type="text"
-        placeholder="Title"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        className="border p-2 rounded"
-      />
-      <MentionsInput
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        placeholder="Write in MDX (e.g., [[other-note-slug]])"
-        className="border p-2 rounded h-40"
-      >
-        <Mention
-          trigger="["
-          data={mentionData}
-          markup="[[__display__]]"
-          displayTransform={(_id, display) => `[[${display}]]`}
-          appendSpaceOnAdd
-        />
-      </MentionsInput>
-      <input
-        type="text"
-        placeholder="Tags (comma-separated)"
-        value={tags}
-        onChange={(e) => setTags(e.target.value)}
-        className="border p-2 rounded"
-      />
-      <label className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={isPublic}
-          onChange={(e) => setIsPublic(e.target.checked)}
-        />
-        Public
-      </label>
-      <div className="flex gap-2">
-        <button
-          onClick={handleSave}
-          className="bg-blue-500 text-white p-2 rounded"
-        >
-          {noteId ? "Update Note" : "Save Note"}
-        </button>
-        <button
-          onClick={handleExportMarkdown}
-          className="bg-gray-500 text-white p-2 rounded"
-        >
-          Export as Markdown
-        </button>
-        {/* <button
-          onClick={handleExportHTML}
-          className="bg-gray-500 text-white p-2 rounded"
-        >
-          Export as HTML
-        </button> */}
-        {noteId && (
-          <button
-            onClick={handleDelete}
-            className="bg-red-500 text-white p-2 rounded"
+    <div className="space-y-6">
+      <h1 className="text-3xl font-bold text-[var(--text)]">Note Editor</h1>
+      <div className="space-y-4">
+        <div>
+          <label
+            htmlFor="title"
+            className="block text-sm font-medium text-[var(--text)]"
           >
-            Delete Note
+            Title
+          </label>
+          <input
+            id="title"
+            type="text"
+            placeholder="Enter note title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="input mt-1"
+            disabled={isLoading}
+          />
+        </div>
+        <div>
+          <label
+            htmlFor="content"
+            className="block text-sm font-medium text-[var(--text)]"
+          >
+            Content (MDX)
+          </label>
+          <MentionsInput
+            id="content"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="Write in MDX (e.g., [[other-note-slug]])"
+            className="mentions-input input mt-1 resize-y min-h-[200px]"
+            disabled={isLoading}
+          >
+            <Mention
+              trigger="["
+              data={mentionData}
+              markup="[[__display__]]"
+              displayTransform={(_id, display) => `[[${display}]]`}
+              appendSpaceOnAdd
+            />
+          </MentionsInput>
+        </div>
+        <div>
+          <label
+            htmlFor="tags"
+            className="block text-sm font-medium text-[var(--text)]"
+          >
+            Tags (comma-separated)
+          </label>
+          <input
+            id="tags"
+            type="text"
+            placeholder="e.g., work, personal"
+            value={tags}
+            onChange={(e) => setTags(e.target.value)}
+            className="input mt-1"
+            disabled={isLoading}
+          />
+        </div>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={isPublic}
+            onChange={(e) => setIsPublic(e.target.checked)}
+            disabled={isLoading}
+            className="h-4 w-4 text-[var(--primary)] focus:ring-[var(--primary)]"
+          />
+          <span className="text-sm text-[var(--text)]">Make Public</span>
+        </label>
+        <div className="flex flex-wrap gap-3">
+          <button
+            onClick={handleSave}
+            className="btn btn-primary"
+            disabled={isLoading}
+          >
+            {isLoading ? "Saving..." : noteId ? "Update Note" : "Save Note"}
           </button>
-        )}
+          <button
+            onClick={handleExportMarkdown}
+            className="btn btn-accent"
+            disabled={isLoading}
+          >
+            Export as Markdown
+          </button>
+          <button
+            onClick={handleExportHTML}
+            className="btn btn-accent"
+            disabled={isLoading}
+          >
+            Export as HTML
+          </button>
+          {noteId && (
+            <button
+              onClick={handleDelete}
+              className="btn bg-red-500 hover:bg-red-600"
+              disabled={isLoading}
+            >
+              Delete Note
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
