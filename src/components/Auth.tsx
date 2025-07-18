@@ -2,6 +2,7 @@ import { useState } from "react";
 import { supabase } from "../lib/supabase";
 import type { User } from "../types";
 import { toast } from "react-toastify";
+import { useNavigate } from "react-router-dom";
 
 interface AuthProps {
   setUser: (user: User | null) => void;
@@ -12,6 +13,7 @@ function Auth({ setUser }: AuthProps) {
   const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const navigate = useNavigate();
 
   const handleSignUp = async () => {
     if (password.length < 8) {
@@ -83,6 +85,7 @@ function Auth({ setUser }: AuthProps) {
         username: profile?.username || data.user.user_metadata?.username,
       });
       toast.success("Logged in successfully!");
+      navigate("/");
     }
     setIsLoading(false);
   };
